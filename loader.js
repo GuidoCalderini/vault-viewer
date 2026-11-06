@@ -6,7 +6,7 @@
   const cfg = window.VV_CONFIG;
   const $ = (id) => document.getElementById(id);
   const montre = (id, oui) => $(id).classList.toggle("cache", !oui);
-  const rapport = { version: "chargeur-1", mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
+  const rapport = { version: "chargeur-2", mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
   const t0 = performance.now();
   function etat(t, d) {
     $("etat").textContent = t; $("detail").textContent = d || "";
@@ -49,10 +49,29 @@
   const VV = window.VV = {
     fs: new GraphFS({
       getToken, vaultFolders: cfg.vaultFolders, skipDirs: cfg.skipDirs,
-      canWrite: (p) => !!cfg.ecriture && cfg.listeBlanche.some((re) => re.test(p))
+      canWrite: (p) => { const n = String(p).normalize("NFC"); return !!cfg.ecriture && cfg.listeBlanche.some((re) => re.test(n)); },
+      onStatus: ({ attente }) => montrerAttente(attente),
+      onConflict: ({ nom, conflits }) => dire(`« ${nom} » avait changé sur l'ordinateur : sa version a gagné (${conflits} passage${conflits > 1 ? "s" : ""}).`, true)
     }),
     rapport
   };
+
+  // Message dans la page du vault (sa fonction toast), sinon dans le bandeau du chargeur.
+  function dire(msg, erreur) {
+    try { const w = $("cadre").contentWindow; if (w && typeof w.toast === "function") { w.toast(msg, erreur ? { error: true } : undefined); return; } } catch (e) {}
+    $("bandeau-texte").textContent = msg; $("bandeau-btn").style.display = "none"; $("bandeau").style.display = "block";
+    setTimeout(() => { $("bandeau").style.display = "none"; $("bandeau-btn").style.display = ""; }, 6000);
+  }
+  // Pastille « n en attente » (changements gardés dans le téléphone, pas encore dans OneDrive).
+  let attenteAvant = 0;
+  function montrerAttente(n) {
+    const p = $("attente"); if (!p) return;
+    p.textContent = `⏳ ${n} en attente`; p.style.display = n ? "block" : "none";
+    if (attenteAvant && !n) dire("Changements en attente envoyés à OneDrive ✓");
+    else if (!attenteAvant && n) dire("Pas de connexion : le changement est gardé dans le téléphone et partira tout seul.");
+    attenteAvant = n;
+  }
+  $("attente").addEventListener("click", () => { VV.fs.flush().catch(() => {}); });
 
   async function ouvrirPage() {
     const fs = VV.fs;
@@ -83,15 +102,33 @@
     } catch (e) { echec("Le vault n'a pas pu s'ouvrir", e); }
   }
 
-  // Quand on revient dans l'application : rafraîchir l'inventaire (seulement les changements).
+  // Quand on revient dans l'application : envoyer ce qui attend, rafraîchir l'inventaire (seulement les changements),
+  // et si quelque chose a changé ailleurs, prévenir la page (une leçon ouverte se met à jour).
+  let syncEnCours = null;
+  async function rafraichir() {
+    if (!VV.fs.rootId || syncEnCours) return syncEnCours;
+    syncEnCours = (async () => {
+      try {
+        await VV.fs.flush();
+        const r = await VV.fs.sync();
+        if (r && r.changements) { try { $("cadre").contentWindow.__vvRefresh && $("cadre").contentWindow.__vvRefresh(); } catch (e) {} }
+      } catch (e) {} finally { syncEnCours = null; }
+    })();
+    return syncEnCours;
+  }
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && VV.fs.rootId && Date.now() - VV.fs.lastSync > 60000) VV.fs.sync().catch(() => {});
+    if (document.visibilityState === "visible" && Date.now() - VV.fs.lastSync > 10000) rafraichir();
   });
+  addEventListener("online", () => { VV.fs.flush().catch(() => {}); });
+  // Pendant qu'on lit : un coup d'œil aux changements toutes les 2 minutes (seulement les différences).
+  setInterval(() => { if (document.visibilityState === "visible" && Date.now() - VV.fs.lastSync > 110000) rafraichir(); }, 30000);
 
   $("btn-connexion").addEventListener("click", () => app.loginRedirect({ scopes: cfg.scopes, prompt: "select_account" }));
   $("btn-reessayer").addEventListener("click", demarrer);
   $("btn-deconnexion").addEventListener("click", async () => {
-    try { await VV.fs.signOutClear(); } catch (e) {}
+    const n = VV.fs.pending.size;
+    if (n && !confirm(`${n} changement(s) pas encore envoyé(s) à OneDrive seront perdus. Se déconnecter quand même?`)) return;
+    try { await VV.fs.signOutClear(true); } catch (e) {}
     try { await app.clearCache(); } catch (e) {}
     try { localStorage.clear(); sessionStorage.clear(); } catch (e) {}
     location.replace(redirectUri);

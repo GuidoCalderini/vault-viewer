@@ -15,12 +15,15 @@ window.VV_CONFIG = {
   // Note lue par la page d'essai (essai.html).
   testNote: "00 - Carte du vault (pour Claude).md",
 
-  // Écriture depuis le téléphone. Étape 2 : désactivée (lecture seule).
-  ecriture: false,
+  // Écriture depuis le téléphone (étape 3, 2026-11-06). Conflit avec l'ordinateur : fusion ligne par ligne,
+  // et là où les deux ont touché les mêmes lignes, la version de OneDrive (l'ordinateur) gagne.
+  ecriture: true,
   // Liste blanche (chemins relatifs au vault) : rien d'autre ne peut être écrit, même si « ecriture » est vrai.
   listeBlanche: [
     /^Langues\/[^/]+\/Vocabulaire - [^/]+\.md$/,
     /^Langues\/[^/]+\/Textes\/.+\.md$/,
+    /^Langues\/[^/]+\/Leçons\/.+\.md$/,
+    /^Langues\/[^/]+\/Évaluations\/.+\.md$/,
     /^Langues\/Journal - Langues\.md$/,
     /^Anki\/À ajouter dans Anki\.md$/
   ]

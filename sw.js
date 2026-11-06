@@ -1,6 +1,6 @@
 // Service worker minimal : réseau d'abord, cache en secours (fichiers de la page seulement).
 // Ne met jamais en cache les réponses de Microsoft ni de OneDrive.
-const CACHE = "vv-chargeur-1";
+const CACHE = "vv-chargeur-2";
 const FICHIERS = ["./", "index.html", "loader.js", "graphfs.js", "config.js", "essai.html", "essai.js", "lib/msal-browser.min.js", "manifest.webmanifest", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {
