@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://login.microsoftonline.com https://login.live.com https://graph.microsoft.com https://*.1drv.com https://*.livefilestore.com https://*.microsoftpersonalcontent.com; frame-src https://login.microsoftonline.com https://login.live.com; base-uri 'self'; form-action 'self'">
+<!-- La page du vault (chargée depuis OneDrive dans le cadre ci-dessous) hérite de cette politique :
+     elle a besoin de scripts en ligne, de ses polices et de quelques bibliothèques (pdf.js, Leaflet). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline' blob: https://fonts.googleapis.com https://unpkg.com https://cdn.jsdelivr.net; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob:; worker-src 'self' blob: https://cdn.jsdelivr.net; connect-src 'self' blob: data: https://login.microsoftonline.com https://login.live.com https://graph.microsoft.com https://*.1drv.com https://*.livefilestore.com https://*.microsoftpersonalcontent.com https://cdn.jsdelivr.net https://unpkg.com; frame-src 'self' blob: https://login.microsoftonline.com https://login.live.com; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#1f4d3a">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -12,55 +14,54 @@
 <meta name="apple-mobile-web-app-title" content="Vault">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<title>Vault — essai de connexion</title>
+<title>Vault</title>
 <style>
   :root { --vert:#1f4d3a; --laiton:#bf9b52; --papier:#f6f1e6; --encre:#2a2a2a; --bordeaux:#7a2331; }
-  * { box-sizing: border-box; }
-  html, body { margin:0; min-height:100dvh; background:var(--papier); color:var(--encre);
-    font: 17px/1.45 Georgia, "Times New Roman", serif; }
-  header { background:var(--vert); color:var(--papier);
-    padding: calc(env(safe-area-inset-top) + 14px) 18px 14px; }
-  header h1 { margin:0; font-size:20px; font-weight:normal; letter-spacing:.02em; }
-  header h1 b { color:var(--laiton); }
-  main { padding: 16px 16px calc(env(safe-area-inset-bottom) + 24px); max-width:640px; margin:0 auto; }
-  .boutons { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 16px; }
-  button { font:inherit; font-size:17px; min-height:44px; padding:0 18px; border-radius:10px;
-    border:1px solid var(--vert); background:var(--vert); color:var(--papier); }
-  button.second { background:transparent; color:var(--vert); }
-  button[disabled] { opacity:.45; }
-  ol#etapes { list-style:none; padding:0; margin:0 0 16px; }
-  ol#etapes li { padding:10px 12px; margin:0 0 8px; border-radius:10px; background:#fff;
-    border-left:5px solid #bbb; }
-  li.ok { border-left-color:var(--vert) !important; }
-  li.erreur { border-left-color:var(--bordeaux) !important; }
-  li.attente { border-left-color:var(--laiton) !important; }
-  li small { display:block; color:#666; font-size:14px; word-break:break-word; }
-  pre { white-space:pre-wrap; word-break:break-word; background:#fff; padding:12px; border-radius:10px;
-    font-size:13px; max-height:40vh; overflow:auto; }
-  h2 { font-size:17px; color:var(--vert); margin:18px 0 6px; }
-  .note { font-size:14px; color:#555; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--vert); color:var(--encre);
+    font:17px/1.45 Georgia, "Times New Roman", serif; overflow:hidden; }
+  #cadre { position:fixed; left:0; right:0; bottom:0; top:env(safe-area-inset-top);
+    width:100%; height:calc(100% - env(safe-area-inset-top)); border:0; background:var(--papier); display:none; }
+  #accueil { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .carte { background:var(--papier); border-radius:16px; padding:24px 20px; width:100%; max-width:420px;
+    border:2px solid var(--laiton); text-align:center; }
+  .g { font-size:54px; color:var(--laiton); background:var(--vert); width:84px; height:84px; line-height:84px;
+    border-radius:18px; margin:0 auto 14px; font-weight:bold; }
+  #etat { margin:6px 0 4px; min-height:1.4em; }
+  #detail { font-size:14px; color:#666; min-height:1.2em; word-break:break-word; }
+  .boutons { display:flex; flex-direction:column; gap:10px; margin-top:16px; }
+  button, a.bouton { font:inherit; font-size:17px; min-height:44px; padding:0 18px; border-radius:10px;
+    border:1px solid var(--vert); background:var(--vert); color:var(--papier); text-decoration:none;
+    display:flex; align-items:center; justify-content:center; }
+  button.second, a.bouton.second { background:transparent; color:var(--vert); }
+  .cache { display:none !important; }
+  pre { text-align:left; white-space:pre-wrap; word-break:break-word; font-size:12px; background:#fff;
+    padding:10px; border-radius:8px; max-height:30vh; overflow:auto; }
+  #bandeau { position:fixed; left:12px; right:12px; bottom:calc(env(safe-area-inset-bottom) + 12px); z-index:10;
+    background:var(--bordeaux); color:#fff; border-radius:12px; padding:12px 14px; font-size:15px; display:none; }
+  #bandeau button { margin-top:8px; background:#fff; color:var(--bordeaux); border-color:#fff; width:100%; }
 </style>
 <script src="config.js" defer></script>
 <script src="lib/msal-browser.min.js" defer></script>
-<script src="app.js" defer></script>
+<script src="graphfs.js" defer></script>
+<script src="loader.js" defer></script>
 </head>
 <body>
-<header><h1><b>G</b> · Vault — essai de connexion</h1></header>
-<main>
-  <p class="note">Page d'essai (étape 0). Elle se connecte à ton OneDrive, liste le dossier du vault et lit une note. Elle n'écrit rien.</p>
-  <div class="boutons">
-    <button id="btn-connexion" disabled>Se connecter</button>
-    <button id="btn-test" class="second" disabled>Refaire le test</button>
-    <button id="btn-deconnexion" class="second" disabled>Se déconnecter</button>
+<div id="accueil">
+  <div class="carte">
+    <div class="g">G</div>
+    <div id="etat">Démarrage…</div>
+    <div id="detail"></div>
+    <div class="boutons">
+      <button id="btn-connexion" class="cache">Se connecter</button>
+      <button id="btn-reessayer" class="cache">Réessayer</button>
+      <a id="lien-essai" class="bouton second cache" href="essai.html">Page d'essai</a>
+      <button id="btn-deconnexion" class="second cache">Se déconnecter et tout effacer</button>
+    </div>
+    <pre id="rapport" class="cache"></pre>
   </div>
-  <ol id="etapes"></ol>
-  <h2>Dossier du vault</h2>
-  <pre id="liste">—</pre>
-  <h2>Début de la note de test</h2>
-  <pre id="note">—</pre>
-  <h2>Pour Claude</h2>
-  <pre id="rapport">—</pre>
-  <p class="note">Si quelque chose échoue, fais une capture d'écran de cette page et envoie-la à Claude.</p>
-</main>
+</div>
+<iframe id="cadre" title="Vault"></iframe>
+<div id="bandeau"><span id="bandeau-texte"></span><button id="bandeau-btn">Se reconnecter</button></div>
 </body>
 </html>

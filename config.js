@@ -1,5 +1,4 @@
-// Réglages de la page d'essai. L'identifiant client n'est pas un secret.
-// À remplir après l'inscription de l'application dans Microsoft Entra.
+// Réglages du chargeur. L'identifiant client n'est pas un secret.
 window.VV_CONFIG = {
   clientId: "2e0247c8-11d9-468b-ae12-75c85f175c7d",
   // Comptes Microsoft personnels seulement.
@@ -7,6 +6,22 @@ window.VV_CONFIG = {
   scopes: ["User.Read", "Files.ReadWrite"],
   // Dossier du vault dans OneDrive (premier trouvé).
   vaultFolders: ["Guido's Vault", "Professor Claude"],
-  // Note lue pour le test de lecture (à la racine du vault).
-  testNote: "00 - Carte du vault (pour Claude).md"
+  // La page du vault, à la racine du dossier.
+  pageFile: "Vault Viewer.html",
+  // Dossiers jamais inventoriés d'avance (chargés à la demande seulement).
+  skipDirs: [".obsidian", ".trash", "Calibre Library", ".git", "node_modules"],
+  // Page ouverte au lancement.
+  startHash: "#/langues",
+  // Note lue par la page d'essai (essai.html).
+  testNote: "00 - Carte du vault (pour Claude).md",
+
+  // Écriture depuis le téléphone. Étape 2 : désactivée (lecture seule).
+  ecriture: false,
+  // Liste blanche (chemins relatifs au vault) : rien d'autre ne peut être écrit, même si « ecriture » est vrai.
+  listeBlanche: [
+    /^Langues\/[^/]+\/Vocabulaire - [^/]+\.md$/,
+    /^Langues\/[^/]+\/Textes\/.+\.md$/,
+    /^Langues\/Journal - Langues\.md$/,
+    /^Anki\/À ajouter dans Anki\.md$/
+  ]
 };
