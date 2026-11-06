@@ -49,7 +49,7 @@
   const VV = window.VV = {
     fs: new GraphFS({
       getToken, vaultFolders: cfg.vaultFolders, skipDirs: cfg.skipDirs,
-      canWrite: (p) => { const n = String(p).normalize("NFC"); return !!cfg.ecriture && cfg.listeBlanche.some((re) => re.test(n)); },
+      canWrite: (p) => { const n = String(p).normalize("NFC"); return !!cfg.ecriture && !(cfg.interdits || []).some((re) => re.test(n)); },
       onStatus: ({ attente }) => montrerAttente(attente),
       onConflict: ({ nom, conflits }) => dire(`« ${nom} » avait changé sur l'ordinateur : sa version a gagné (${conflits} passage${conflits > 1 ? "s" : ""}).`, true)
     }),

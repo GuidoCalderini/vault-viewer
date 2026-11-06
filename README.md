@@ -4,11 +4,11 @@ Petit chargeur (PWA) pour ouvrir mon Vault Viewer sur le téléphone. Il se conn
 
 **Ce dépôt ne contient que du code, jamais de notes ni de données.** L'identifiant client dans `config.js` n'est pas un secret.
 
-État : étape 3 — le chargeur ouvre la vraie page du vault et peut écrire (langues seulement : vocabulaire, textes, leçons, évaluations, journal des langues, file Anki). Conflit avec l'ordinateur : fusion ligne par ligne, l'ordinateur gagne là où les deux ont touché les mêmes lignes. Sans réseau : file d'attente dans le téléphone.
+État : étape 3 — le chargeur ouvre la vraie page du vault et peut écrire partout dans le vault, sauf la page elle-même, `.obsidian/` et `Calibre Library/`. Conflit avec l'ordinateur : fusion ligne par ligne, l'ordinateur gagne là où les deux ont touché les mêmes lignes. Sans réseau : file d'attente dans le téléphone.
 
 Principe : `index.html` connecte à Microsoft, `graphfs.js` imite sur OneDrive la petite partie de l'API
 File System Access dont la page se sert (inventaire par `/delta`, cache IndexedDB par eTag, écriture
-avec `If-Match` sur une liste blanche), puis `Vault Viewer.html` est lu dans OneDrive et ouvert dans un cadre.
+avec `If-Match`, sauf les chemins interdits), puis `Vault Viewer.html` est lu dans OneDrive et ouvert dans un cadre.
 La page du vault n'est pas modifiée : elle utilise sa porte `window.__testRootPromise`.
 
 - `index.html`, `loader.js` : le chargeur
