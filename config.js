@@ -15,9 +15,13 @@ window.VV_CONFIG = {
   // Note lue par la page d'essai (essai.html).
   testNote: "00 - Carte du vault (pour Claude).md",
 
-  // Écriture depuis le téléphone (étape 3, 2026-11-06). Conflit avec l'ordinateur : fusion ligne par ligne,
-  // et là où les deux ont touché les mêmes lignes, la version de OneDrive (l'ordinateur) gagne.
+  // Écriture depuis le téléphone (étape 3, 2026-11-06).
   ecriture: true,
+  // Conflit (2026-11-07, décision de Guido) : si seul le téléphone a changé un fichier depuis la dernière
+  // synchro, sa version est gardée. Si les deux ont changé : fusion ligne par ligne ; là où les deux ont
+  // touché les mêmes lignes, l'ordinateur gagne si les deux changements ont moins de ecartJours d'écart,
+  // sinon le plus récent gagne. La version perdante est gardée dans « Conflits (téléphone)/ ».
+  ecartJours: 5,
   // Depuis le 2026-11-06 (décision de Guido) : le téléphone peut écrire partout dans le vault,
   // sauf ici (chemins relatifs au vault). Rien hors du dossier du vault n'est jamais touché.
   interdits: [

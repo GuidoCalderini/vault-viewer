@@ -4,15 +4,23 @@
      fichier : name, kind, getFile() → File (text(), lastModified, type), createWritable() → write(), close()
    L'inventaire vient de /delta (un par dossier de premier niveau), gardé dans IndexedDB : au lancement
    suivant, seuls les changements sont téléchargés. Le contenu des fichiers est mis en cache par eTag.
-   Écriture : PUT avec If-Match, seulement sur la liste blanche. Si le fichier a changé ailleurs (412) :
-   fusion ligne par ligne avec la version de OneDrive ; là où les deux ont touché les mêmes lignes,
-   la version de OneDrive (l'ordinateur) gagne. Sans réseau ou connexion expirée : file d'attente
-   (IndexedDB), envoyée dès que possible avec la même règle. */
+   Écriture : PUT avec If-Match, sauf les chemins interdits. Si seul le téléphone a changé le fichier,
+   sa version est gardée. Si le fichier a aussi changé ailleurs (412) : fusion ligne par ligne ; là où
+   les deux ont touché les mêmes lignes, l'ordinateur gagne si les deux changements ont moins de 5 jours
+   d'écart, sinon le plus récent gagne ; la version perdante est gardée dans « Conflits (téléphone)/ ».
+   Sans réseau, connexion expirée ou mode hors ligne : file d'attente (IndexedDB), envoyée dès que
+   possible avec la même règle. Hors ligne, tout est lu dans le cache (inventaire + contenu). */
 (function () {
   "use strict";
   const GRAPH = "https://graph.microsoft.com/v1.0";
-  const SEL = "id,name,parentReference,file,folder,deleted,eTag,size,lastModifiedDateTime";
-  const CACHE_MAX = 8 * 1024 * 1024;   // on ne garde pas en cache les fichiers plus gros que ça
+  const SEL = "id,name,parentReference,file,folder,deleted,eTag,size,lastModifiedDateTime,fileSystemInfo";
+  const CACHE_MAX = 80 * 1024 * 1024;  // on ne garde pas en cache les fichiers plus gros que ça
+  const GROS = 4 * 1024 * 1024;        // au-delà (livres, PDF) : seulement les GROS_N derniers ouverts
+  const GROS_N = 3;
+  const PREFETCH_MAX = 1.5 * 1024 * 1024; // gardés d'avance pour le hors ligne : textes jusqu'à cette taille
+  const PREFETCH_EXT = /\.(md|txt|json|csv|tsv|canvas|base|ya?ml|css|svg)$/i;
+  const JOUR = 86400000;
+  const DOSSIER_CONFLITS = "Conflits (téléphone)";
   const TREE_VERSION = 1;
 
   /* ---------- IndexedDB ---------- */
@@ -51,7 +59,7 @@
   }
 
   // Erreur de réseau ou connexion expirée → on garde le changement pour plus tard.
-  const horsLigne = (e) => !!e && (e.reconnexion || e.name === "TypeError" || /failed to fetch|load failed|network/i.test(e.message || "") || navigator.onLine === false);
+  const horsLigne = (e) => !!e && (e.horsLigne || e.reconnexion || e.name === "TypeError" || /failed to fetch|load failed|network/i.test(e.message || "") || navigator.onLine === false);
 
   /* ---------- fusion à trois, ligne par ligne ---------- */
   // Pour chaque ligne de a : l'indice de la ligne appariée dans b (plus longue sous-suite commune), ou -1.
@@ -72,8 +80,9 @@
     return map;
   }
   // base = ce que le téléphone avait lu ; moi = ce que le téléphone veut écrire ; eux = OneDrive maintenant.
-  // Bloc touché des deux côtés de façon différente → « eux » gagne (l'ordinateur gagne).
-  function fusion3(baseTxt, moiTxt, euxTxt) {
+  // Bloc touché des deux côtés de façon différente → « eux » gagne (l'ordinateur), sauf gagnant = "moi".
+  function fusion3(baseTxt, moiTxt, euxTxt, gagnant) {
+    const moiGagne = gagnant === "moi";
     const o = baseTxt.split("\n"), m = moiTxt.split("\n"), t = euxTxt.split("\n");
     const mM = apparier(o, m), mT = apparier(o, t);
     const egal = (x, y) => x.length === y.length && x.every((v, q) => v === y[q]);
@@ -82,8 +91,8 @@
       if (egal(M, O)) return T; if (egal(T, O)) return M; if (egal(M, T)) return M;
       // Lignes modifiées sur place des deux côtés (ex. statuts de mots voisins) : on règle ligne par ligne.
       if (O.length === M.length && O.length === T.length)
-        return O.map((x, q) => (M[q] === x ? T[q] : T[q] === x || T[q] === M[q] ? M[q] : (conflits++, T[q])));
-      conflits++; return T;
+        return O.map((x, q) => (M[q] === x ? T[q] : T[q] === x || T[q] === M[q] ? M[q] : (conflits++, moiGagne ? M[q] : T[q])));
+      conflits++; return moiGagne ? M : T;
     };
     let i = 0, j = 0, k = 0;
     for (let a = 0; a <= o.length; a++) {
@@ -98,7 +107,7 @@
   }
 
   class GraphFS {
-    constructor({ getToken, vaultFolders, skipDirs, canWrite, log, onStatus, onConflict }) {
+    constructor({ getToken, vaultFolders, skipDirs, canWrite, log, onStatus, onConflict, ecartJours }) {
       this.getToken = getToken;
       this.vaultFolders = vaultFolders;
       this.skip = new Set(skipDirs || []);
@@ -115,6 +124,10 @@
       this.pending = new Map();                    // id (réel ou « local:… ») -> changement en attente
       this.alias = new Map();                      // id « local:… » -> vrai id, une fois le nouveau fichier créé
       this.queueLoaded = false; this.flushing = null; this.flushTimer = null;
+      this.ecart = (ecartJours == null ? 5 : ecartJours) * JOUR;  // « à peu près en même temps »
+      this.offline = false;          // mode hors ligne choisi : on ne lit que le cache
+      this.syncAt = 0;               // moment de la dernière synchronisation complète gardée
+      this.grosChain = Promise.resolve();
     }
     real(id) { let x = id; for (let n = 0; x && this.alias.has(x) && n < 5; n++) x = this.alias.get(x); return x; }
 
@@ -201,12 +214,15 @@
         const t = rest.parent === this.rootId && rest.dir && (this.skip.has(rest.name) || rest.name.startsWith("."));
         return Object.assign(rest, { loaded: !!kids && !t });
       });
-      await idbPut("kv", "tree", { v: TREE_VERSION, rootId: this.rootId, rootName: this.rootName, deltaLinks: this.deltaLinks, items, at: Date.now() });
+      const syncAt = this.lastSync || this.syncAt || 0;
+      await idbPut("kv", "tree", { v: TREE_VERSION, rootId: this.rootId, rootName: this.rootName, deltaLinks: this.deltaLinks, items, at: Date.now(), syncAt });
+      await idbPut("kv", "syncAt", syncAt);
     }
     async restore() {
       const t = await idbGet("kv", "tree");
       if (!t || t.v !== TREE_VERSION) return false;
       this.rootId = t.rootId; this.rootName = t.rootName; this.deltaLinks = t.deltaLinks || {};
+      this.syncAt = t.syncAt || t.at || 0;
       for (const it of t.items) this.items.set(it.id, Object.assign(it, { kids: it.dir ? (it.loaded ? new Set() : null) : undefined }));
       for (const it of this.items.values()) { delete it.loaded; const p = this.items.get(it.parent); if (p && p.kids) p.kids.add(it.id); }
       return true;
@@ -242,6 +258,21 @@
       for (const raw of upd) { const it = this.items.get(raw.id); const p = it && this.items.get(it.parent); if (p && p.kids) p.kids.add(it.id); }
       for (const raw of del) if (!seen.has(raw.id)) this.drop(raw.id);
       return upd.length + del.length;
+    }
+
+    // Date de la dernière synchronisation gardée dans le téléphone (0 si rien), sans tout charger.
+    async peekSaved() {
+      const a = await idbGet("kv", "syncAt").catch(() => null);
+      if (a) return a;
+      const t = await idbGet("kv", "tree").catch(() => null);
+      return (t && t.v === TREE_VERSION && (t.syncAt || t.at)) || 0;
+    }
+    // Mode hors ligne : inventaire et contenus pris dans le téléphone seulement. null si rien n'est gardé.
+    async openOffline() {
+      this.offline = true;
+      await this.loadQueue();
+      if (!this.rootId && !(await this.restore())) return null;
+      return this.syncAt || 0;
     }
 
     // Lancement : cache, puis racine (1 requête), puis /delta de chaque dossier de 1er niveau.
@@ -283,12 +314,54 @@
       const p = this.pending.get(it.id);
       if (p) return new Blob([p.text], { type: "text/plain;charset=utf-8" });   // changement pas encore envoyé : c'est lui qu'on montre
       const c = await idbGet("content", it.id).catch(() => null);
-      if (c && c.eTag && c.eTag === it.eTag) { this.stats.depuisCache++; return c.blob; }
+      if (c && c.eTag && c.eTag === it.eTag) {
+        this.stats.depuisCache++;
+        if (c.blob && c.blob.size > GROS) this.garderGros(it.id);
+        return c.blob;
+      }
+      if (this.offline) {
+        // Hors ligne : une version plus ancienne vaut mieux que rien.
+        if (c && c.blob) { this.stats.depuisCache++; return c.blob; }
+        const e = new Error(`« ${it.name} » n'est pas gardé dans le téléphone (mode hors ligne).`); e.horsLigne = true; throw e;
+      }
       const r = await this.req(`/me/drive/items/${it.id}/content`);
       if (!r.ok) { const e = new Error(`Lecture impossible (${r.status}) : ${it.name}`); e.status = r.status; throw e; }
       const blob = await r.blob(); this.stats.telecharges++;
-      if (blob.size <= CACHE_MAX) idbPut("content", it.id, { eTag: it.eTag, blob }).catch(() => {});
+      if (blob.size <= CACHE_MAX) {
+        await idbPut("content", it.id, { eTag: it.eTag, blob }).catch(() => {});
+        if (blob.size > GROS) this.garderGros(it.id);
+      }
       return blob;
+    }
+    // Gros fichiers (livres) : on ne garde que les GROS_N derniers ouverts, pour ménager la place du téléphone.
+    garderGros(id) {
+      this.grosChain = this.grosChain.then(async () => {
+        let l = ((await idbGet("kv", "gros").catch(() => null)) || []).filter((x) => x !== id);
+        l.unshift(id);
+        for (const vieux of l.slice(GROS_N)) await idbDel("content", vieux).catch(() => {});
+        await idbPut("kv", "gros", l.slice(0, GROS_N));
+      }).catch(() => {});
+      return this.grosChain;
+    }
+    // Après une synchronisation : garder d'avance dans le téléphone tous les textes (notes, etc.)
+    // pas encore à jour dans le cache, pour pouvoir travailler hors ligne. Quelques-uns à la fois.
+    prefetch() {
+      if (this.prefetching) return this.prefetching;
+      if (this.offline) return Promise.resolve(null);
+      const liste = [...this.items.values()].filter((it) => !it.dir && it.eTag && it.size <= PREFETCH_MAX
+        && PREFETCH_EXT.test(it.name) && !String(it.id).startsWith("local:"));
+      this.prefetching = (async () => {
+        let faits = 0;
+        const un = async (it) => {
+          if (this.pending.has(it.id)) return;
+          const c = await idbGet("content", it.id).catch(() => null);
+          if (c && c.eTag === it.eTag) return;
+          try { await this.content(it); faits++; } catch (e) { if (horsLigne(e)) throw e; }
+        };
+        for (let i = 0; i < liste.length && !this.offline; i += 4) await Promise.all(liste.slice(i, i + 4).map(un));
+        return { textes: liste.length, telecharges: faits };
+      })().finally(() => { this.prefetching = null; });
+      return this.prefetching;
     }
 
     /* ---- file d'attente ---- */
@@ -338,26 +411,31 @@
     // Envoie un changement ; renvoie le texte effectivement envoyé (pour savoir si la file est vide).
     async send(job) {
       const corps = (t) => new Blob([t], { type: "text/plain;charset=utf-8" });
-      const envoye = job.text; let texte = envoye, perdus = 0;
+      const envoye = job.text; let texte = envoye, perdus = 0, gagnant = "eux", perdant = null;
       for (let tour = 0; tour < 4; tour++) {
         let url; const headers = { "Content-Type": "text/plain; charset=utf-8" };
         if (!job.isNew) { url = `/me/drive/items/${job.id}/content`; if (job.baseETag) headers["If-Match"] = job.baseETag; }
         else url = `/me/drive/items/${job.parentId}:/${enc(job.name)}:/content?@microsoft.graph.conflictBehavior=fail`;
         const r = await this.req(url, { method: "PUT", headers, body: corps(texte) });
         if (r.status === 412 || r.status === 409) {
-          // Changé ailleurs : fusion ; là où les deux ont touché les mêmes lignes, OneDrive (l'ordinateur) gagne.
+          // Changé des deux côtés : fusion ligne par ligne. Là où les deux ont touché les mêmes lignes :
+          // l'ordinateur gagne si les deux changements ont moins de 5 jours d'écart ; sinon le plus récent gagne.
           const eux = await this.fresh(job);
           if (job.isNew || String(job.id).startsWith("local:")) this.adopt(job, eux.raw);
+          const fsi = eux.raw.fileSystemInfo || {};
+          const tEux = Date.parse(fsi.lastModifiedDateTime || eux.raw.lastModifiedDateTime || "") || 0;
+          gagnant = (job.at || 0) - tEux > this.ecart ? "moi" : "eux";
           let f;
-          if (job.baseText == null) f = { texte: eux.text, conflits: eux.text === texte ? 0 : 1 };
-          else f = fusion3(job.baseText, texte, eux.text);
+          if (job.baseText == null) f = eux.text === texte ? { texte, conflits: 0 } : { texte: gagnant === "moi" ? texte : eux.text, conflits: 1 };
+          else f = fusion3(job.baseText, texte, eux.text, gagnant);
+          if (f.conflits) perdant = gagnant === "moi" ? { qui: "ordinateur", texte: eux.text } : { qui: "téléphone", texte };
           perdus += f.conflits;
           job.baseText = eux.text; job.baseETag = eux.raw.eTag; texte = f.texte;
           if (texte === eux.text) {                              // rien à ajouter : la version de OneDrive suffit
             this.put(eux.raw, job.parentId);
             if (eux.text.length <= CACHE_MAX) idbPut("content", eux.raw.id, { eTag: eux.raw.eTag, blob: corps(eux.text) }).catch(() => {});
             this.save().catch(() => {});
-            if (perdus) this.onConflict({ chemin: job.path, nom: job.name, conflits: perdus });
+            await this.finConflit(job, perdus, gagnant, perdant);
             return envoye;
           }
           continue;
@@ -369,10 +447,29 @@
         job.baseETag = raw.eTag; job.baseText = texte;
         if (texte.length <= CACHE_MAX) idbPut("content", raw.id, { eTag: raw.eTag, blob: corps(texte) }).catch(() => {});
         this.save().catch(() => {});
-        if (perdus) this.onConflict({ chemin: job.path, nom: job.name, conflits: perdus });
+        await this.finConflit(job, perdus, gagnant, perdant);
         return envoye;
       }
       throw new Error(`« ${job.name} » change sans arrêt ailleurs; réessaie dans un moment.`);
+    }
+
+    // Après un vrai conflit : la version perdante entière est gardée dans « Conflits (téléphone)/ », puis on prévient.
+    async finConflit(job, perdus, gagnant, perdant) {
+      if (!perdus) return;
+      let copie = null;
+      if (perdant && !String(job.path || "").startsWith(DOSSIER_CONFLITS + "/")) {
+        try {
+          let d = this.child(this.rootId, DOSSIER_CONFLITS);
+          if (!d) d = await this.mkdir(this.rootId, DOSSIER_CONFLITS);
+          const t = new Date(), p = (n) => String(n).padStart(2, "0");
+          const quand = `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}h${p(t.getMinutes())}${p(t.getSeconds())}`;
+          copie = `${quand} — ${perdant.qui} — ${job.name}`;
+          const md = /\.md$/i.test(job.name);
+          const entete = md ? `> [!warning] Copie de conflit — version du ${perdant.qui} qui n'a pas gagné\n> Fichier : [[${String(job.path).replace(/\.md$/i, "")}]] — gardée le ${quand}. Comparer, garder ce qu'il faut, puis supprimer cette copie.\n\n` : "";
+          await this.write(d.id, copie, null, entete + perdant.texte);
+        } catch (e) { copie = null; this.log("copie de conflit : " + (e.message || e)); }
+      }
+      try { this.onConflict({ chemin: job.path, nom: job.name, conflits: perdus, gagnant: gagnant === "moi" ? "téléphone" : "ordinateur", copie, dossier: DOSSIER_CONFLITS }); } catch (e) {}
     }
 
     /* ---- écriture ---- */
@@ -419,7 +516,7 @@
 
     // Efface tout ce qui est dans le téléphone. La file d'attente n'est effacée que si on le demande.
     async signOutClear(aussiFile) {
-      this.items.clear(); this.deltaLinks = {}; this.rootId = null;
+      this.items.clear(); this.deltaLinks = {}; this.rootId = null; this.syncAt = 0;
       await idbClear("kv"); await idbClear("content");
       if (aussiFile) { this.pending.clear(); await idbClear("queue"); }
     }

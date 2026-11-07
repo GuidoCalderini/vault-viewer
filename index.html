@@ -42,6 +42,9 @@
   #attente { position:fixed; left:10px; bottom:calc(env(safe-area-inset-bottom) + 10px); z-index:9; display:none;
     background:var(--laiton); color:var(--vert); border-radius:999px; padding:6px 12px; font-size:14px; font-weight:bold;
     box-shadow:0 2px 8px rgba(0,0,0,.2); cursor:pointer; }
+  #pastille-hl { position:fixed; right:10px; bottom:calc(env(safe-area-inset-bottom) + 10px); z-index:9; display:none;
+    background:var(--vert); color:var(--papier); border:1px solid var(--laiton); border-radius:999px; padding:6px 12px;
+    font-size:14px; box-shadow:0 2px 8px rgba(0,0,0,.2); cursor:pointer; }
   #bandeau button { margin-top:8px; background:#fff; color:var(--bordeaux); border-color:#fff; width:100%; }
 </style>
 <script src="config.js" defer></script>
@@ -58,6 +61,7 @@
     <div class="boutons">
       <button id="btn-connexion" class="cache">Se connecter</button>
       <button id="btn-reessayer" class="cache">Réessayer</button>
+      <button id="btn-horsligne" class="second cache">Travailler hors ligne</button>
       <a id="lien-essai" class="bouton second cache" href="essai.html">Page d'essai</a>
       <button id="btn-deconnexion" class="second cache">Se déconnecter et tout effacer</button>
     </div>
@@ -66,6 +70,7 @@
 </div>
 <iframe id="cadre" title="Vault"></iframe>
 <div id="attente" title="Toucher pour réessayer l'envoi"></div>
+<div id="pastille-hl" title="Toucher pour se connecter à OneDrive"></div>
 <div id="bandeau"><span id="bandeau-texte"></span><button id="bandeau-btn">Se reconnecter</button></div>
 </body>
 </html>
