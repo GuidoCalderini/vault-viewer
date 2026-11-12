@@ -346,24 +346,29 @@
         note(`${voie} OK, ${b.size} octets, ${ms()}`);
         return b;
       };
-      let derniere = null;
-      for (let n = 0; n < 3; n++) {                       // voie 1 : /content (avec réessais)
-        try { return await lire(await this.req(`/me/drive/items/${it.id}/content`), "content"); }
-        catch (e) {
-          derniere = e; note(`content essai ${n + 1} : ${e.status || ""} ${e.message}, ${ms()}`);
-          if (e.status && e.status !== 408 && e.status < 500) break;   // 4xx : inutile de réessayer
-          await sleep(1000 * (n + 1));
+      // Panne lente chez Microsoft : on insiste jusqu'à PATIENCE, en alternant /content et le lien direct,
+      // avec des pauses de plus en plus longues. this.onEssai(texte) montre où on en est.
+      const PATIENCE = 5 * 60000;
+      let derniere = null, n = 0;
+      while (true) {
+        n++;
+        const voie = n % 2 ? "content" : "lien direct";
+        (this.onEssai || (() => {}))(`essai ${n}, ${Math.round((performance.now() - t0) / 1000)} s`);
+        try {
+          if (voie === "content") return await lire(await this.req(`/me/drive/items/${it.id}/content`), voie);
+          const m = await this.json(`/me/drive/items/${it.id}?select=id,size,@microsoft.graph.downloadUrl`);
+          const url = m["@microsoft.graph.downloadUrl"];
+          if (!url) throw new Error("pas de lien direct");
+          return await lire(await this.limit(() => fetch(url)), voie);
+        } catch (e) {
+          derniere = e; note(`${voie} essai ${n} : ${e.status || ""} ${e.message}, ${ms()}`);
+          if (e.status && e.status !== 408 && e.status !== 429 && e.status < 500) throw e;   // 4xx : inutile d'insister
+          if (performance.now() - t0 > PATIENCE) {
+            const err = new Error(`${e.message} (${n} essais en ${Math.round((performance.now() - t0) / 1000)} s)`);
+            err.status = e.status; throw err;
+          }
+          await sleep(Math.min(2000 * n, 15000));
         }
-      }
-      try {                                               // voie 2 : lien direct de téléchargement
-        const m = await this.json(`/me/drive/items/${it.id}?select=id,size,@microsoft.graph.downloadUrl`);
-        const url = m["@microsoft.graph.downloadUrl"];
-        if (!url) throw new Error("pas de lien direct");
-        return await lire(await this.limit(() => fetch(url)), "lien direct");
-      } catch (e) {
-        note(`lien direct : ${e.status || ""} ${e.message}, ${ms()}`);
-        const err = new Error(`${(derniere && derniere.message) || "Échec"} ; lien direct : ${e.message}`);
-        err.status = (derniere && derniere.status) || e.status; throw err;
       }
     }
     // Gros fichiers (livres) : on ne garde que les GROS_N derniers ouverts, pour ménager la place du téléphone.

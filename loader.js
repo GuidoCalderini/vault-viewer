@@ -13,7 +13,7 @@
   const HORS_LIGNE = PARAMS.has("horsligne");
   // ?page=… : ouvrir une autre page du vault (ex. une sauvegarde) pour le diagnostic.
   const PAGE = PARAMS.get("page") || cfg.pageFile;
-  const rapport = { version: "chargeur-5", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
+  const rapport = { version: "chargeur-6", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
   const t0 = performance.now();
   function etat(t, d) {
     $("etat").textContent = t; $("detail").textContent = d || "";
@@ -111,8 +111,11 @@
     const fs = VV.fs;
     const it = fs.child(fs.rootId, PAGE);
     if (!it) throw new Error(`« ${PAGE} » introuvable à la racine du vault.`);
-    etat("Ouverture de la page…", PAGE + (it.size ? ` · ${Math.round(it.size/1024)} Ko` : ""));
+    const quoi = PAGE + (it.size ? ` · ${Math.round(it.size/1024)} Ko` : "");
+    etat("Ouverture de la page…", quoi);
+    fs.onEssai = (d) => { $("etat").textContent = "Ouverture de la page… (Microsoft est lent, on insiste)"; $("detail").textContent = quoi + " · " + d; };
     const html = await (await fs.content(it)).text();
+    fs.onEssai = null;
     // La porte de la page : un dossier racine fourni d'avance remplace le sélecteur de dossier.
     const porte = "<script>window.__testRootPromise = Promise.resolve(parent.VV.fs.root); window.__VV_TELEPHONE = true;<\/script>";
     const avecPorte = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + porte) : porte + html;
