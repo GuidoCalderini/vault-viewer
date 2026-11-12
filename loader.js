@@ -10,7 +10,7 @@
   const $ = (id) => document.getElementById(id);
   const montre = (id, oui) => $(id).classList.toggle("cache", !oui);
   const HORS_LIGNE = new URLSearchParams(location.search).has("horsligne");
-  const rapport = { version: "chargeur-3", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
+  const rapport = { version: "chargeur-4", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
   const t0 = performance.now();
   function etat(t, d) {
     $("etat").textContent = t; $("detail").textContent = d || "";

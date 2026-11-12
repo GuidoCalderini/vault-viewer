@@ -324,14 +324,47 @@
         if (c && c.blob) { this.stats.depuisCache++; return c.blob; }
         const e = new Error(`« ${it.name} » n'est pas gardé dans le téléphone (mode hors ligne).`); e.horsLigne = true; throw e;
       }
-      const r = await this.req(`/me/drive/items/${it.id}/content`);
-      if (!r.ok) { const e = new Error(`Lecture impossible (${r.status}) : ${it.name}`); e.status = r.status; throw e; }
-      const blob = await r.blob(); this.stats.telecharges++;
+      const blob = await this.telecharger(it); this.stats.telecharges++;
       if (blob.size <= CACHE_MAX) {
         await idbPut("content", it.id, { eTag: it.eTag, blob }).catch(() => {});
         if (blob.size > GROS) this.garderGros(it.id);
       }
       return blob;
+    }
+    // Téléchargement d'un fichier. Graph répond à /content par une redirection vers un autre serveur
+    // (OneDrive) ; si ce serveur ne répond pas (« Failed to fetch »), on réessaie, puis on essaie le lien
+    // direct (@microsoft.graph.downloadUrl, sans en-tête d'autorisation). Chaque tentative est gardée dans
+    // this.stats.essais (visible dans « Pour Claude ») pour savoir quelle étape échoue.
+    async telecharger(it) {
+      const essais = this.stats.essais = this.stats.essais || [];
+      const note = (s) => { essais.push(`${it.name} · ${s}`); if (essais.length > 20) essais.shift(); };
+      const t0 = performance.now(), ms = () => Math.round(performance.now() - t0) + " ms";
+      const lire = async (r, voie) => {
+        if (!r.ok) { const e = new Error(`Lecture impossible (${r.status}, ${voie}) : ${it.name}`); e.status = r.status; throw e; }
+        const b = await r.blob();
+        if (it.size && b.size !== it.size) throw new Error(`Téléchargement incomplet (${b.size} sur ${it.size} octets, ${voie}) : ${it.name}`);
+        note(`${voie} OK, ${b.size} octets, ${ms()}`);
+        return b;
+      };
+      let derniere = null;
+      for (let n = 0; n < 3; n++) {                       // voie 1 : /content (avec réessais)
+        try { return await lire(await this.req(`/me/drive/items/${it.id}/content`), "content"); }
+        catch (e) {
+          derniere = e; note(`content essai ${n + 1} : ${e.status || ""} ${e.message}, ${ms()}`);
+          if (e.status && e.status !== 408 && e.status < 500) break;   // 4xx : inutile de réessayer
+          await sleep(1000 * (n + 1));
+        }
+      }
+      try {                                               // voie 2 : lien direct de téléchargement
+        const m = await this.json(`/me/drive/items/${it.id}?select=id,size,@microsoft.graph.downloadUrl`);
+        const url = m["@microsoft.graph.downloadUrl"];
+        if (!url) throw new Error("pas de lien direct");
+        return await lire(await this.limit(() => fetch(url)), "lien direct");
+      } catch (e) {
+        note(`lien direct : ${e.status || ""} ${e.message}, ${ms()}`);
+        const err = new Error(`${(derniere && derniere.message) || "Échec"} ; lien direct : ${e.message}`);
+        err.status = (derniere && derniere.status) || e.status; throw err;
+      }
     }
     // Gros fichiers (livres) : on ne garde que les GROS_N derniers ouverts, pour ménager la place du téléphone.
     garderGros(id) {
