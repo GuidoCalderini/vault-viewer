@@ -8,6 +8,7 @@ Petit chargeur (PWA) pour ouvrir mon Vault Viewer sur le téléphone. Il se conn
 
 - **Connexion par défaut** ; si elle est impossible (pas de réseau, connexion expirée, trop lent), l'écran propose « Travailler hors ligne » (`?horsligne=1`) : la page s'ouvre avec la version gardée dans le téléphone, et les changements attendent la prochaine connexion.
 - **Gardé dans le téléphone** : l'inventaire, toutes les notes texte (gardées d'avance après chaque synchro) et les 3 derniers gros fichiers ouverts (livres).
+- **Livres gardés** (chargeur 7, 2026-11-14) : les livres `BookStatus: Reading`, ceux épinglés sur la fiche (📌, épingles gardées dans l'appareil) et les dictionnaires de la liseuse sont téléchargés en arrière-plan et jamais effacés par la règle des 3 derniers (plafond 1 Go, 400 Mo par livre). Le chemin de ces fichiers (même dans `Calibre Library/`) est gardé dans l'inventaire, pour les ouvrir hors ligne. pdf.js (jsDelivr) est gardé dans le cache `vv-cdn`.
 - **Conflits** : si seul le téléphone a changé un fichier depuis la dernière synchro, sa version est gardée. Si les deux ont changé : fusion ligne par ligne ; là où les deux ont touché les mêmes lignes, l'ordinateur gagne si les deux changements ont moins de 5 jours d'écart (`ecartJours`), sinon le plus récent gagne. La version perdante est gardée dans `Conflits (téléphone)/` à la racine du vault.
 
 Principe : `index.html` connecte à Microsoft, `graphfs.js` imite sur OneDrive la petite partie de l'API

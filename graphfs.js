@@ -17,6 +17,9 @@
   const CACHE_MAX = 80 * 1024 * 1024;  // on ne garde pas en cache les fichiers plus gros que ça
   const GROS = 4 * 1024 * 1024;        // au-delà (livres, PDF) : seulement les GROS_N derniers ouverts
   const GROS_N = 3;
+  // Livres gardés (2026-11-14) : livres « Reading », épinglés à la main et dictionnaires — jamais effacés par la règle des 3 derniers.
+  const LIVRE_MAX = 400 * 1024 * 1024;      // un livre gardé peut aller jusqu'à cette taille
+  const LIVRES_PLAFOND = 1024 * 1024 * 1024; // au-delà, on ne garde pas les suivants (et on le dit sur la fiche)
   const PREFETCH_MAX = 1.5 * 1024 * 1024; // gardés d'avance pour le hors ligne : textes jusqu'à cette taille
   const PREFETCH_EXT = /\.(md|txt|json|csv|tsv|canvas|base|ya?ml|css|svg)$/i;
   const JOUR = 86400000;
@@ -128,6 +131,13 @@
       this.offline = false;          // mode hors ligne choisi : on ne lit que le cache
       this.syncAt = 0;               // moment de la dernière synchronisation complète gardée
       this.grosChain = Promise.resolve();
+      this.gardes = new Set();       // ids des fichiers gardés (livres en cours, épinglés, dictionnaires)
+      this.gardesInfo = [];          // [{id, path, size, epingle, trop, manque}]
+      this.gardesP = null;
+      this.onLivres = null;
+    }
+    chargerGardes() {
+      return this.gardesP ||= idbGet("kv", "livres").then((l) => { this.gardesInfo = l || []; this.gardes = new Set(this.gardesInfo.filter((x) => x.id && !x.trop).map((x) => x.id)); }).catch(() => {});
     }
     real(id) { let x = id; for (let n = 0; x && this.alias.has(x) && n < 5; n++) x = this.alias.get(x); return x; }
 
@@ -160,6 +170,7 @@
         mime: (raw.file && raw.file.mimeType) || "",
         kids: old ? old.kids : (raw.folder ? null : undefined)
       };
+      if (old && old.partiel) it.partiel = true;
       if (old && old.parent !== it.parent) this.items.get(old.parent)?.kids?.delete(id);
       this.items.set(id, it);
       const p = this.items.get(it.parent); if (p && p.kids) p.kids.add(id);
@@ -184,18 +195,41 @@
     }
 
     // Enfants d'un dossier pas encore chargé (dossiers sautés comme Calibre Library) : à la demande.
+    // Dossier « partiel » (2026-11-14) : gardé avec seulement le chemin vers les livres gardés ; hors ligne, ça suffit.
     async loadKids(dirId) {
       const d = this.items.get(dirId);
-      if (!d || d.kids) return;
-      const kids = new Set(); d.kids = kids;
-      let url = `/me/drive/items/${dirId}/children?$select=${SEL}&$top=999`;
-      try {
-        while (url) {
-          const j = await this.json(url);
-          for (const raw of j.value) { const it = this.put(raw, dirId); if (it.dir && !this.items.get(it.id).kids) it.kids = null; }
-          url = j["@odata.nextLink"];
+      if (!d) return;
+      if (d.chargement) return d.chargement;
+      if (d.kids && !d.partiel) return;
+      if (d.partiel && this.offline) return;
+      const ancien = d.kids;
+      d.chargement = (async () => {
+        const kids = new Set(); d.kids = kids;
+        let url = `/me/drive/items/${dirId}/children?$select=${SEL}&$top=999`;
+        try {
+          while (url) {
+            const j = await this.json(url);
+            for (const raw of j.value) { const it = this.put(raw, dirId); if (it.dir && !this.items.get(it.id).kids) it.kids = null; }
+            url = j["@odata.nextLink"];
+          }
+          delete d.partiel;
+        } catch (e) {
+          if (ancien) { for (const k of ancien) kids.add(k); d.kids = kids; if (horsLigne(e)) return; }   // pas de réseau : le chemin gardé suffit
+          else d.kids = null;
+          throw e;
         }
-      } catch (e) { d.kids = null; throw e; }
+      })().finally(() => { delete d.chargement; });
+      return d.chargement;
+    }
+    // Élément d'après son chemin dans le vault (charge les dossiers au besoin).
+    async itemByPath(path) {
+      let id = this.rootId;
+      for (const part of nfc(path).split("/").filter(Boolean)) {
+        await this.loadKids(id);
+        const c = this.child(id, part); if (!c) return null;
+        id = c.id;
+      }
+      return this.items.get(id) || null;
     }
 
     // Dossier de premier niveau qui contient cet élément (null pour la racine).
@@ -205,13 +239,20 @@
       return it && it.id !== this.rootId ? it : null;
     }
     async save() {
-      // On ne garde que ce que /delta tient à jour : la racine, ses enfants directs et les dossiers non sautés.
-      const keep = (it) => {
+      await this.chargerGardes();
+      // On ne garde que ce que /delta tient à jour (racine, enfants directs, dossiers non sautés) + le chemin des livres gardés.
+      const parDelta = (it) => {
         if (it.id === this.rootId || it.parent === this.rootId) return true;
         const t = this.topOf(it.id); return !!t && !this.skip.has(t.name) && !t.name.startsWith(".");
       };
-      const items = [...this.items.values()].filter(keep).map(({ kids, ...rest }) => {
+      // Livres gardés (2026-11-14) : le fichier et chaque dossier jusqu'à la racine, même dans Calibre Library.
+      const chaine = new Set();
+      for (const g of this.gardes) { let it = this.items.get(g); while (it && it.id !== this.rootId) { chaine.add(it.id); it = this.items.get(it.parent); } }
+      const items = [...this.items.values()].filter((it) => parDelta(it) || chaine.has(it.id)).map(({ kids, chargement, ...rest }) => {
         const t = rest.parent === this.rootId && rest.dir && (this.skip.has(rest.name) || rest.name.startsWith("."));
+        const horsDelta = t || !parDelta(rest);
+        if (rest.dir && chaine.has(rest.id) && horsDelta) return Object.assign(rest, { loaded: true, partiel: true });
+        delete rest.partiel;
         return Object.assign(rest, { loaded: !!kids && !t });
       });
       const syncAt = this.lastSync || this.syncAt || 0;
@@ -223,6 +264,7 @@
       if (!t || t.v !== TREE_VERSION) return false;
       this.rootId = t.rootId; this.rootName = t.rootName; this.deltaLinks = t.deltaLinks || {};
       this.syncAt = t.syncAt || t.at || 0;
+      await this.chargerGardes();
       for (const it of t.items) this.items.set(it.id, Object.assign(it, { kids: it.dir ? (it.loaded ? new Set() : null) : undefined }));
       for (const it of this.items.values()) { delete it.loaded; const p = this.items.get(it.parent); if (p && p.kids) p.kids.add(it.id); }
       return true;
@@ -313,10 +355,12 @@
     async content(it) {
       const p = this.pending.get(it.id);
       if (p) return new Blob([p.text], { type: "text/plain;charset=utf-8" });   // changement pas encore envoyé : c'est lui qu'on montre
+      await this.chargerGardes();
+      const garde = this.gardes.has(it.id);
       const c = await idbGet("content", it.id).catch(() => null);
       if (c && c.eTag && c.eTag === it.eTag) {
         this.stats.depuisCache++;
-        if (c.blob && c.blob.size > GROS) this.garderGros(it.id);
+        if (!garde && c.blob && c.blob.size > GROS) this.garderGros(it.id);
         return c.blob;
       }
       if (this.offline) {
@@ -325,9 +369,9 @@
         const e = new Error(`« ${it.name} » n'est pas gardé dans le téléphone (mode hors ligne).`); e.horsLigne = true; throw e;
       }
       const blob = await this.telecharger(it); this.stats.telecharges++;
-      if (blob.size <= CACHE_MAX) {
+      if (blob.size <= (garde ? LIVRE_MAX : CACHE_MAX)) {
         await idbPut("content", it.id, { eTag: it.eTag, blob }).catch(() => {});
-        if (blob.size > GROS) this.garderGros(it.id);
+        if (!garde && blob.size > GROS) this.garderGros(it.id);
       }
       return blob;
     }
@@ -374,8 +418,9 @@
     // Gros fichiers (livres) : on ne garde que les GROS_N derniers ouverts, pour ménager la place du téléphone.
     garderGros(id) {
       this.grosChain = this.grosChain.then(async () => {
-        let l = ((await idbGet("kv", "gros").catch(() => null)) || []).filter((x) => x !== id);
-        l.unshift(id);
+        await this.chargerGardes();
+        let l = ((await idbGet("kv", "gros").catch(() => null)) || []).filter((x) => x !== id && !this.gardes.has(x));
+        if (!this.gardes.has(id)) l.unshift(id);
         for (const vieux of l.slice(GROS_N)) await idbDel("content", vieux).catch(() => {});
         await idbPut("kv", "gros", l.slice(0, GROS_N));
       }).catch(() => {});
@@ -400,6 +445,60 @@
         return { textes: liste.length, telecharges: faits };
       })().finally(() => { this.prefetching = null; });
       return this.prefetching;
+    }
+
+    /* ---- livres gardés dans l'appareil (2026-11-14) ---- */
+    // chemins = livres « Reading » + dictionnaires (envoyés par la page) ; on y ajoute les épingles de l'appareil.
+    async garderLivres(chemins) {
+      await this.chargerGardes();
+      const ep = await this.epingles();
+      const tous = [...new Set([...(chemins || []), ...ep].map(nfc))];
+      if (this.offline) return this.etatLivres();
+      const info = []; let somme = 0;
+      for (const path of tous) {
+        const it = await this.itemByPath(path).catch(() => null);
+        if (!it || it.dir) { info.push({ path, manque: true, epingle: ep.includes(path) }); continue; }
+        const x = { id: it.id, path, size: it.size || 0, epingle: ep.includes(path) };
+        if (somme + x.size > LIVRES_PLAFOND) x.trop = true; else somme += x.size;
+        info.push(x);
+      }
+      const avant = this.gardes;
+      this.gardesInfo = info; this.gardes = new Set(info.filter((x) => x.id && !x.trop).map((x) => x.id));
+      await idbPut("kv", "livres", info).catch(() => {});
+      for (const id of avant) if (!this.gardes.has(id)) this.garderGros(id);   // redevient un gros fichier ordinaire (3 derniers)
+      await this.save().catch(() => {});
+      this.telechargerGardes();
+      return this.etatLivres();
+    }
+    telechargerGardes() {
+      if (this.tg) return this.tg;
+      this.tg = (async () => {
+        for (const x of this.gardesInfo) {
+          if (!x.id || x.trop || this.offline || !this.gardes.has(x.id)) continue;
+          const it = this.items.get(x.id); if (!it) continue;
+          const c = await idbGet("content", it.id).catch(() => null);
+          if (c && c.blob && c.eTag === it.eTag) continue;
+          try { await this.content(it); } catch (e) { if (horsLigne(e)) break; this.log("livre gardé : " + (e.message || e)); }
+          try { this.onLivres && this.onLivres(); } catch (e) {}
+        }
+      })().finally(() => { this.tg = null; });
+      return this.tg;
+    }
+    async etatLivres() {
+      await this.chargerGardes();
+      const out = [];
+      for (const x of this.gardesInfo) {
+        let garde = false;
+        if (x.id && !x.trop) { const it = this.items.get(x.id); const c = await idbGet("content", x.id).catch(() => null); garde = !!(c && c.blob && (!it || !it.eTag || c.eTag === it.eTag || this.offline)); }
+        out.push(Object.assign({}, x, { garde }));
+      }
+      return out;
+    }
+    async epingles() { return (await idbGet("kv", "epingles").catch(() => null)) || []; }
+    async epingler(path, on) {
+      path = nfc(path); let l = (await this.epingles()).filter((x) => x !== path);
+      if (on) l.push(path);
+      await idbPut("kv", "epingles", l); return l;
     }
 
     /* ---- file d'attente ---- */
@@ -554,7 +653,7 @@
 
     // Efface tout ce qui est dans le téléphone. La file d'attente n'est effacée que si on le demande.
     async signOutClear(aussiFile) {
-      this.items.clear(); this.deltaLinks = {}; this.rootId = null; this.syncAt = 0;
+      this.items.clear(); this.deltaLinks = {}; this.rootId = null; this.syncAt = 0; this.gardes = new Set(); this.gardesInfo = []; this.gardesP = null;
       await idbClear("kv"); await idbClear("content");
       if (aussiFile) { this.pending.clear(); await idbClear("queue"); }
     }

@@ -13,7 +13,7 @@
   const HORS_LIGNE = PARAMS.has("horsligne");
   // ?page=… : ouvrir une autre page du vault (ex. une sauvegarde) pour le diagnostic.
   const PAGE = PARAMS.get("page") || cfg.pageFile;
-  const rapport = { version: "chargeur-6", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
+  const rapport = { version: "chargeur-7", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
   const t0 = performance.now();
   function etat(t, d) {
     $("etat").textContent = t; $("detail").textContent = d || "";
