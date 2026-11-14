@@ -13,7 +13,7 @@
   const HORS_LIGNE = PARAMS.has("horsligne");
   // ?page=… : ouvrir une autre page du vault (ex. une sauvegarde) pour le diagnostic.
   const PAGE = PARAMS.get("page") || cfg.pageFile;
-  const rapport = { version: "chargeur-8", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
+  const rapport = { version: "chargeur-9", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
   const t0 = performance.now();
   function etat(t, d) {
     $("etat").textContent = t; $("detail").textContent = d || "";
@@ -165,6 +165,39 @@
     setTimeout(() => { VV.fs.prefetch().then((r) => { if (r) rapport.gardeDAvance = r; }).catch(() => {}); }, 4000);
   }
 
+  // Démarrage rapide (2026-11-14, demande de Guido) : si l'appareil a déjà une version gardée et que Guido est connecté,
+  // la page s'ouvre tout de suite depuis l'appareil (comme le hors ligne), puis la connexion et la synchro se font
+  // en arrière-plan. Ce qui a changé ailleurs arrive comme d'habitude ; une nouvelle version de la page attend le
+  // prochain lancement (on le dit). Si la connexion a expiré : le bandeau « Se reconnecter ». Rien n'est jamais perdu :
+  // les changements faits entre-temps attendent dans la file, comme hors ligne.
+  async function demarrerRapide() {
+    cacherBoutons();
+    etat("Ouverture…", "");
+    let at = null;
+    try { at = await VV.fs.openOffline(); } catch (e) { at = null; }
+    if (at == null) { VV.fs.offline = false; return demarrer(); }
+    rapport.rapide = true; rapport.versionDu = at && new Date(at).toISOString();
+    const avant = VV.fs.child(VV.fs.rootId, PAGE), etagAvant = avant && avant.eTag;
+    try { await ouvrirPage(); }
+    catch (e) { VV.fs.offline = false; rapport.rapideEchec = String(e.message || e).slice(0, 200); return demarrer(); }
+    try {
+      const compte = app.getActiveAccount() || app.getAllAccounts()[0];
+      await avecDelai(app.acquireTokenSilent({ scopes: cfg.scopes, account: compte }), 20000);
+      VV.fs.offline = false;
+      const r = await VV.fs.sync(); rapport.inventaire = r;
+      garderDAvance();
+      const apres = VV.fs.child(VV.fs.rootId, PAGE);
+      if (apres && etagAvant && apres.eTag !== etagAvant) dire("Une nouvelle version du Vault est prête : ferme et rouvre l'application pour l'avoir.");
+      if (r && r.changements) { try { $("cadre").contentWindow.__vvRefresh && $("cadre").contentWindow.__vvRefresh(); } catch (e) {} }
+    } catch (e) {
+      rapport.connexion = (e.errorCode || "") + " " + (e.message || e);
+      if (e instanceof msal.InteractionRequiredAuthError) {
+        reconnexion = true;
+        $("bandeau-texte").textContent = "La connexion à OneDrive a expiré."; $("bandeau").style.display = "block";
+      } else dire("OneDrive ne répond pas pour l'instant : tes changements sont gardés dans l'appareil et partiront tout seuls.");
+    }
+  }
+
   // Mode hors ligne : la version gardée dans le téléphone, sans connexion.
   async function demarrerHorsLigne() {
     cacherBoutons();
@@ -198,6 +231,7 @@
       try {
         await VV.fs.flush();
         const r = await VV.fs.sync();
+        VV.fs.offline = false;                           // démarrage rapide : la synchro a marché, on repasse en ligne
         if (r && r.changements) { VV.fs.prefetch().catch(() => {}); try { $("cadre").contentWindow.__vvRefresh && $("cadre").contentWindow.__vvRefresh(); } catch (e) {} }
       } catch (e) {} finally { syncEnCours = null; }
     })();
@@ -236,6 +270,8 @@
       const comptes = app.getAllAccounts();
       if (!comptes.length) { etat("Bienvenue", "Connecte-toi avec ton compte Microsoft (Hotmail)."); montre("btn-connexion", true); offrirHorsLigne(); return; }
       app.setActiveAccount(app.getActiveAccount() || comptes[0]);
+      // Déjà connecté et une version gardée dans l'appareil : on ouvre tout de suite (pas au retour d'une connexion).
+      if (!retour && navigator.onLine !== false && cfg.demarrageRapide !== false && (await VV.fs.peekSaved().catch(() => 0))) return demarrerRapide();
       await demarrer();
     } catch (e) { echec("Connexion impossible", e); montre("btn-connexion", true); }
   })();

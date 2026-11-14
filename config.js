@@ -10,6 +10,9 @@ window.VV_CONFIG = {
   pageFile: "Vault Viewer.html",
   // Dossiers jamais inventoriés d'avance (chargés à la demande seulement).
   skipDirs: [".obsidian", ".trash", "Calibre Library", ".git", "node_modules"],
+  // Démarrage rapide (2026-11-14) : ouvrir tout de suite la version gardée dans l'appareil, synchro ensuite.
+  // Mettre false pour revenir à l'ancien démarrage (connexion et synchro d'abord).
+  demarrageRapide: true,
   // Page ouverte au lancement.
   startHash: "#/langues",
   // Note lue par la page d'essai (essai.html).
