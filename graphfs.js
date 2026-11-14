@@ -47,6 +47,7 @@
   const idbClear = (store) => idb(store, "readwrite", (s) => s.clear());
   const idbDel = (store, k) => idb(store, "readwrite", (s) => s.delete(k));
   const idbAll = (store) => idb(store, "readonly", (s) => s.getAll());
+  const idbKeys = (store) => idb(store, "readonly", (s) => s.getAllKeys());
 
   /* ---------- utilitaires ---------- */
   const nfc = (s) => (s || "").normalize("NFC");
@@ -451,8 +452,8 @@
     // chemins = livres « Reading » + dictionnaires (envoyés par la page) ; on y ajoute les épingles de l'appareil.
     async garderLivres(chemins) {
       await this.chargerGardes();
-      const ep = await this.epingles();
-      const tous = [...new Set([...(chemins || []), ...ep].map(nfc))];
+      const ep = await this.epingles(), retires = await this.retires();
+      const tous = [...new Set([...(chemins || []).map(nfc).filter((p) => !retires.includes(p)), ...ep.map(nfc)])];
       if (this.offline) return this.etatLivres();
       const info = []; let somme = 0;
       for (const path of tous) {
@@ -470,9 +471,17 @@
       this.telechargerGardes();
       return this.etatLivres();
     }
-    telechargerGardes() {
+    // Wi-Fi seulement (réglage, défaut non) : on ne télécharge pas en données cellulaires ; si l'appareil ne dit rien, on télécharge.
+    enCellulaire() { const c = typeof navigator !== "undefined" && navigator.connection; return !!(c && c.type === "cellular"); }
+    telechargerGardes(force) {
       if (this.tg) return this.tg;
       this.tg = (async () => {
+        if (!force && (await this.reglage("wifiSeulement")) && this.enCellulaire()) {
+          this.attenteWifi = true;
+          if (!this.ecouteWifi && navigator.connection) { this.ecouteWifi = true; navigator.connection.addEventListener("change", () => { if (this.attenteWifi && !this.enCellulaire()) this.telechargerGardes(); }); }
+          return;
+        }
+        this.attenteWifi = false;
         for (const x of this.gardesInfo) {
           if (!x.id || x.trop || this.offline || !this.gardes.has(x.id)) continue;
           const it = this.items.get(x.id); if (!it) continue;
@@ -497,8 +506,66 @@
     async epingles() { return (await idbGet("kv", "epingles").catch(() => null)) || []; }
     async epingler(path, on) {
       path = nfc(path); let l = (await this.epingles()).filter((x) => x !== path);
-      if (on) l.push(path);
+      if (on) { l.push(path); await this.remettre(path); }
       await idbPut("kv", "epingles", l); return l;
+    }
+    async retires() { return (await idbGet("kv", "retires").catch(() => null)) || []; }
+    async remettre(path) { path = nfc(path); const l = (await this.retires()).filter((x) => x !== path); await idbPut("kv", "retires", l); return l; }
+    async reglage(k, v) {
+      const r = (await idbGet("kv", "reglages").catch(() => null)) || {};
+      if (v === undefined) return r[k];
+      r[k] = v; await idbPut("kv", "reglages", r); return v;
+    }
+
+    /* ---- page « Cet appareil » (2026-11-14) : tout ce qui est gardé, et le supprimer ---- */
+    async stockage() {
+      await this.chargerGardes();
+      const keys = (await idbKeys("content").catch(() => [])) || [], vals = (await idbAll("content").catch(() => [])) || [];
+      const info = new Map(this.gardesInfo.filter((x) => x.id).map((x) => [x.id, x]));
+      const fichiers = [], notes = { n: 0, size: 0 };
+      keys.forEach((id, i) => {
+        const v = vals[i]; const size = (v && v.blob && v.blob.size) || 0;
+        const it = this.items.get(id), x = info.get(id);
+        const path = (x && x.path) || (it ? this.pathOf(id) : "");
+        let raison = null;
+        if (x && this.gardes.has(id)) raison = /^Bibliothèque\/_data\/dict\//.test(path) ? "dictionnaire" : x.epingle ? "épinglé" : "en cours";
+        else if (size > GROS) raison = "récent";
+        if (!raison) { notes.n++; notes.size += size; return; }
+        fichiers.push({ id, path, name: it ? it.name : path.split("/").pop() || String(id), size, raison, aJour: !it || !it.eTag || v.eTag === it.eTag });
+      });
+      for (const x of this.gardesInfo) if (!x.id || x.trop || !keys.includes(x.id)) fichiers.push({ id: x.id || null, path: x.path, name: x.path.split("/").pop(), size: x.size || 0, raison: /^Bibliothèque\/_data\/dict\//.test(x.path) ? "dictionnaire" : x.epingle ? "épinglé" : "en cours", manque: !!x.manque, trop: !!x.trop, absent: true });
+      let estimate = null, persistant = null;
+      try { estimate = await navigator.storage.estimate(); } catch (e) {}
+      try { persistant = await navigator.storage.persisted(); } catch (e) {}
+      return { fichiers, notes, estimate, persistant, retires: await this.retires(), wifiSeulement: !!(await this.reglage("wifiSeulement")),
+        enCellulaire: this.enCellulaire(), attenteWifi: !!this.attenteWifi, typeReseau: (navigator.connection && navigator.connection.type) || "" };
+    }
+    // Supprimer un fichier de l'appareil (jamais du vault). Un livre gardé est aussi désépinglé et mis dans « retirés »
+    // (plus de téléchargement automatique, même s'il reste « Reading »), jusqu'à ce qu'on l'épingle ou le remette.
+    async supprimer(id) {
+      await this.chargerGardes();
+      const x = this.gardesInfo.find((g) => g.id === id);
+      await idbDel("content", id).catch(() => {});
+      const l = ((await idbGet("kv", "gros").catch(() => null)) || []).filter((g) => g !== id); await idbPut("kv", "gros", l).catch(() => {});
+      if (x) {
+        await this.epingler(x.path, false);
+        const r = (await this.retires()).filter((p) => p !== x.path); r.push(x.path); await idbPut("kv", "retires", r);
+        this.gardesInfo = this.gardesInfo.filter((g) => g !== x); this.gardes.delete(id);
+        await idbPut("kv", "livres", this.gardesInfo).catch(() => {});
+        await this.save().catch(() => {});
+      }
+    }
+    // Vider les notes et petits fichiers gardés (ils reviennent tout seuls à la prochaine synchro). Les changements en attente ne sont pas touchés.
+    async viderNotes() {
+      await this.chargerGardes();
+      const keys = (await idbKeys("content").catch(() => [])) || [], vals = (await idbAll("content").catch(() => [])) || [];
+      let n = 0;
+      for (let i = 0; i < keys.length; i++) {
+        const id = keys[i], size = (vals[i] && vals[i].blob && vals[i].blob.size) || 0;
+        if (this.gardes.has(id) || this.pending.has(id) || size > GROS) continue;
+        await idbDel("content", id).catch(() => {}); n++;
+      }
+      return n;
     }
 
     /* ---- file d'attente ---- */

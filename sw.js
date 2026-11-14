@@ -1,7 +1,7 @@
 // Service worker minimal : réseau d'abord, cache en secours (fichiers de la page seulement).
 // Si le réseau ne répond pas en 4 s (réseau faible), on sert la copie gardée : le chargeur s'ouvre
 // quand même et peut proposer le hors ligne. Ne met jamais en cache les réponses de Microsoft ni de OneDrive.
-const CACHE = "vv-chargeur-7";
+const CACHE = "vv-chargeur-8";
 // pdf.js (jsDelivr) : gardé dans « vv-cdn » pour lire les PDF hors ligne (versions fixes : le cache d'abord).
 const CDN = "vv-cdn";
 const FICHIERS = ["./", "index.html", "loader.js", "graphfs.js", "config.js", "essai.html", "essai.js", "lib/msal-browser.min.js", "manifest.webmanifest", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png"];
