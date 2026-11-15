@@ -11,9 +11,11 @@
   const montre = (id, oui) => $(id).classList.toggle("cache", !oui);
   const PARAMS = new URLSearchParams(location.search);
   const HORS_LIGNE = PARAMS.has("horsligne");
+  // ?frais=1 : bouton « ⟳ Page » (2026-11-14) — pas de démarrage rapide : synchro d'abord, puis la page fraîche de OneDrive.
+  const FRAIS = PARAMS.has("frais");
   // ?page=… : ouvrir une autre page du vault (ex. une sauvegarde) pour le diagnostic.
   const PAGE = PARAMS.get("page") || cfg.pageFile;
-  const rapport = { version: "chargeur-9", horsLigne: HORS_LIGNE, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
+  const rapport = { version: "chargeur-10", horsLigne: HORS_LIGNE, frais: FRAIS, mode: (matchMedia("(display-mode: standalone)").matches || navigator.standalone) ? "PWA" : "navigateur", etapes: [] };
   const t0 = performance.now();
   function etat(t, d) {
     $("etat").textContent = t; $("detail").textContent = d || "";
@@ -187,7 +189,7 @@
       const r = await VV.fs.sync(); rapport.inventaire = r;
       garderDAvance();
       const apres = VV.fs.child(VV.fs.rootId, PAGE);
-      if (apres && etagAvant && apres.eTag !== etagAvant) dire("Une nouvelle version du Vault est prête : ferme et rouvre l'application pour l'avoir.");
+      if (apres && etagAvant && apres.eTag !== etagAvant) dire("Une nouvelle version du Vault est prête : touche « ⟳ Page » pour l'avoir.");
       if (r && r.changements) { try { $("cadre").contentWindow.__vvRefresh && $("cadre").contentWindow.__vvRefresh(); } catch (e) {} }
     } catch (e) {
       rapport.connexion = (e.errorCode || "") + " " + (e.message || e);
@@ -220,6 +222,16 @@
     if (confirm(msg)) location.replace(redirectUri);
   }
   $("pastille-hl").addEventListener("click", seConnecterDepuisHorsLigne);
+
+  // Bouton « ⟳ Page » de la page du vault (2026-11-14) : dans le cadre, location.reload() rouvrait la même copie
+  // (blob) déjà en mémoire. Ici on recharge tout le chargeur avec ?frais=1 : la connexion se refait en silence
+  // (pas de nouvelle ouverture de session sauf si Microsoft l'exige), la synchro passe d'abord, puis la page est
+  // relue dans OneDrive. Les changements en attente ne sont pas perdus (file gardée dans l'appareil).
+  VV.recharger = () => {
+    if (HORS_LIGNE) return seConnecterDepuisHorsLigne();
+    if (navigator.onLine === false) { dire("Pas de réseau : impossible de télécharger la nouvelle version pour l'instant.", true); return; }
+    location.replace(redirectUri + "?frais=1");   // la page rouvre d'elle-même l'écran où on était
+  };
   $("btn-horsligne").addEventListener("click", () => location.replace(redirectUri + "?horsligne=1"));
 
   // Quand on revient dans l'application : envoyer ce qui attend, rafraîchir l'inventaire (seulement les changements),
@@ -271,7 +283,8 @@
       if (!comptes.length) { etat("Bienvenue", "Connecte-toi avec ton compte Microsoft (Hotmail)."); montre("btn-connexion", true); offrirHorsLigne(); return; }
       app.setActiveAccount(app.getActiveAccount() || comptes[0]);
       // Déjà connecté et une version gardée dans l'appareil : on ouvre tout de suite (pas au retour d'une connexion).
-      if (!retour && navigator.onLine !== false && cfg.demarrageRapide !== false && (await VV.fs.peekSaved().catch(() => 0))) return demarrerRapide();
+      if (FRAIS) { try { history.replaceState(null, "", redirectUri); } catch (e) {} }
+      if (!retour && !FRAIS && navigator.onLine !== false && cfg.demarrageRapide !== false && (await VV.fs.peekSaved().catch(() => 0))) return demarrerRapide();
       await demarrer();
     } catch (e) { echec("Connexion impossible", e); montre("btn-connexion", true); }
   })();
